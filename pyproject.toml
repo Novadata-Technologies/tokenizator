@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.8.6", "numpy>=1.26.4"]
+build-backend = "maturin"
+
+[project]
+name = "tokenizator"
+version = "0.1.0"
+description = "A very lightweight Rust based library that tokenizes documents"
+authors = [{ name = "Pau Montserrat", email = "pau@usetaizen.com" }]
+keywords = []
+requires-python = ">=3.11"
+
+dependencies = [
+    "cffi>=2.0.0",
+    "numpy>=1.26.4",
+]
+
+[project.optional-dependencies]
+dev = ["maturin>=1.8.6", "pytest>=7.4.4", "cffi>=2.0.0"]
+
+[tool.include]
+include = ["Cargo.toml", "pyproject.toml", "README.md", "src/*"]
+
+[dependency-groups]
+dev = [
+    "cffi>=2.0.0",
+    "maturin>=1.9.4",
+    "pytest>=8.4.2",
+]
