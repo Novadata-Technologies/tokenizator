@@ -66,8 +66,8 @@ impl TokenizationEstimator {
 
         Ok(Self {
             tokenizer,
-            query_prefix: query_prefix.unwrap_or_else(|| "Query: ".to_string()),
-            document_prefix: document_prefix.unwrap_or_else(|| "Document: ".to_string()),
+            query_prefix: query_prefix.unwrap_or_else(|| "[Q]".to_string()),
+            document_prefix: document_prefix.unwrap_or_else(|| "[D]".to_string()),
             document_length: document_length.unwrap_or(8192),
             mask_token_id,
             mask_token: mask_token_str,
