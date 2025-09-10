@@ -1,6 +1,9 @@
 use pyo3::prelude::*;
 use tokenizers::Tokenizer;
 
+// TODO mask_token_id has to be set correctly, not with params (model.rs)
+// TODO query and document prefixes have to be set correctly, not with params (builder.rs)
+
 // Custom Python exception for tokenization errors
 pyo3::create_exception!(
     tokenization_estimator,
@@ -181,30 +184,8 @@ impl TokenizationEstimator {
         Ok(estimated_memory <= available_bytes)
     }
 
-    /// Get optimal batch size for available memory
-    pub fn get_optimal_batch_size(
-        &mut self,
-        sample_text: String,
-        is_query: bool,
-        available_bytes: usize,
-        embedding_dim: Option<usize>,
-        bytes_per_token: Option<usize>,
-    ) -> PyResult<usize> {
-        // Start with a single text to get per-item memory usage
-        let single_text = vec![sample_text.clone()];
-        let (_, _, memory_per_item) =
-            self.estimate_memory_usage(single_text, is_query, embedding_dim, bytes_per_token)?;
-
-        if memory_per_item == 0 {
-            return Ok(1);
-        }
-
-        // Calculate max batch size (with some safety margin)
-        let max_batch_size = (available_bytes as f64 * 0.8) as usize / memory_per_item;
-        Ok(max_batch_size.max(1))
-    }
-
     /// Split texts into optimal batches based on memory constraints
+    /// Uses recursive power-of-2 splitting strategy
     pub fn split_into_batches(
         &mut self,
         texts: Vec<String>,
@@ -217,20 +198,89 @@ impl TokenizationEstimator {
             return Ok(vec![]);
         }
 
-        let optimal_batch_size = self.get_optimal_batch_size(
-            texts[0].clone(),
+        // Check if all texts fit in memory as a single batch
+        if self.can_fit_in_memory(
+            texts.clone(),
+            is_query,
+            available_bytes,
+            embedding_dim,
+            bytes_per_token,
+        )? {
+            return Ok(vec![texts]);
+        }
+
+        // Recursively split the texts
+        self.split_recursive(
+            texts,
+            is_query,
+            available_bytes,
+            embedding_dim,
+            bytes_per_token,
+        )
+    }
+
+    /// Recursively split texts into batches that fit in memory
+    fn split_recursive(
+        &mut self,
+        texts: Vec<String>,
+        is_query: bool,
+        available_bytes: usize,
+        embedding_dim: Option<usize>,
+        bytes_per_token: Option<usize>,
+    ) -> PyResult<Vec<Vec<String>>> {
+        // Base case: if we have only one text and it doesn't fit, return error
+        if texts.len() == 1 {
+            if !self.can_fit_in_memory(
+                texts.clone(),
+                is_query,
+                available_bytes,
+                embedding_dim,
+                bytes_per_token,
+            )? {
+                return Err(TokenizationError::new_err(
+                    "Single text is too large to fit in available memory",
+                ));
+            }
+            return Ok(vec![texts]);
+        }
+
+        // Check if current batch fits in memory
+        if self.can_fit_in_memory(
+            texts.clone(),
+            is_query,
+            available_bytes,
+            embedding_dim,
+            bytes_per_token,
+        )? {
+            return Ok(vec![texts]);
+        }
+
+        // Split in half (power of 2 strategy)
+        let mid = texts.len() / 2;
+        let (left_batch, right_batch) = texts.split_at(mid);
+
+        // Recursively split both halves
+        let mut result = Vec::new();
+
+        let left_batches = self.split_recursive(
+            left_batch.to_vec(),
             is_query,
             available_bytes,
             embedding_dim,
             bytes_per_token,
         )?;
+        result.extend(left_batches);
 
-        let mut batches = Vec::new();
-        for chunk in texts.chunks(optimal_batch_size) {
-            batches.push(chunk.to_vec());
-        }
+        let right_batches = self.split_recursive(
+            right_batch.to_vec(),
+            is_query,
+            available_bytes,
+            embedding_dim,
+            bytes_per_token,
+        )?;
+        result.extend(right_batches);
 
-        Ok(batches)
+        Ok(result)
     }
 }
 
