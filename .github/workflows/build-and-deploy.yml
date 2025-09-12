@@ -1,0 +1,184 @@
+name: Build and Deploy Wheels (Production)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+    types: [ closed ]
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        version: "latest"
+
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Cache Rust dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Run tests
+      run: make test
+
+  build-wheels:
+    name: Build Wheels
+    needs: test
+    runs-on: ${{ matrix.os }}
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds
+          - os: ubuntu-latest
+            python: "3.11"
+            target: x86_64
+            manylinux: auto
+          - os: ubuntu-latest
+            python: "3.12"
+            target: x86_64
+            manylinux: auto
+
+          # macOS Intel builds
+          - os: macos-13
+            python: "3.11"
+            target: x86_64-apple-darwin
+          - os: macos-13
+            python: "3.12"
+            target: x86_64-apple-darwin
+
+          # macOS Apple Silicon builds
+          - os: macos-latest
+            python: "3.11"
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            python: "3.12"
+            target: aarch64-apple-darwin
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        version: "latest"
+
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Install Rust target
+      if: matrix.target != 'x86_64'
+      run: rustup target add ${{ matrix.target }}
+
+    - name: Cache Rust dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install maturin[patchelf] cffi
+
+    # Linux builds using manylinux
+    - name: Build wheels (Linux)
+      if: runner.os == 'Linux'
+      uses: PyO3/maturin-action@v1
+      with:
+        target: ${{ matrix.target }}
+        args: --release --out wheels --interpreter python${{ matrix.python }}
+        sccache: 'true'
+        manylinux: ${{ matrix.manylinux }}
+
+    # macOS builds
+    - name: Build wheels (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        export MACOSX_DEPLOYMENT_TARGET=11.0
+        maturin build --release --target ${{ matrix.target }} --out wheels --interpreter python${{ matrix.python }}
+
+    - name: List built wheels
+      run: |
+        echo "Built wheels:"
+        ls -la wheels/
+
+    - name: Upload wheels
+      uses: actions/upload-artifact@v4
+      with:
+        name: wheels-${{ matrix.os }}-${{ matrix.target }}-py${{ matrix.python }}
+        path: wheels/
+        if-no-files-found: error
+
+  deploy-to-s3:
+    name: Deploy to S3
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+
+    steps:
+    - name: Download all wheel artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: all-wheels
+        pattern: wheels-*
+        merge-multiple: true
+
+    - name: List downloaded wheels
+      run: |
+        echo "Downloaded wheels:"
+        find all-wheels -name "*.whl" -type f | sort
+        echo ""
+        echo "Total wheels found: $(find all-wheels -name "*.whl" -type f | wc -l)"
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+
+    - name: Upload wheels to S3
+      run: |
+        # Remove existing wheels from S3 bucket
+        echo "Removing existing wheels from S3..."
+        aws s3 rm s3://taizen-wheels/tokenizator/ --recursive || echo "No existing files to remove"
+
+        # Upload new wheels
+        echo "Uploading new wheels to S3..."
+        aws s3 cp all-wheels/ s3://taizen-wheels/tokenizator/ --recursive --include "*.whl"
+
+        # List uploaded files
+        echo "Files uploaded to S3:"
+        aws s3 ls s3://taizen-wheels/tokenizator/ --recursive
