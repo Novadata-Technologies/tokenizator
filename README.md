@@ -102,5 +102,5 @@ make clean
 - **Internet required**: `from_pretrained()` downloads from HuggingFace Hub
 - **Model compatibility**: Use models that have `tokenizer.json` available
 - **Padding strategy**: Queries use fixed-length, documents use variable-length
-- **Memory overhead**: Estimates include ~50% for intermediate tensors
+- **Memory overhead**: Estimates include ~20% for intermediate tensors
 - **uv package manager**: Examples use `uv` instead of `pip`
