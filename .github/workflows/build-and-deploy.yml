@@ -64,14 +64,6 @@ jobs:
             target: x86_64
             manylinux: auto
 
-          # macOS Intel builds
-          - os: macos-13
-            python: "3.11"
-            target: x86_64-apple-darwin
-          - os: macos-13
-            python: "3.12"
-            target: x86_64-apple-darwin
-
           # macOS Apple Silicon builds
           - os: macos-latest
             python: "3.11"
