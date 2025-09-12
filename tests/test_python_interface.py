@@ -44,20 +44,6 @@ class TestTokenizationEstimator:
 
         assert total_mem / 1024**2 > 2, f"Expected memory usage to be greater than 2MB, but got {total_mem / 1024**2}MB"
 
-        # Test batch optimization
-        print("\nTesting batch optimization...")
-        available_memory = 1024 * 1024 * 1024  # 1GB
-
-        optimal_size = estimator.get_optimal_batch_size(
-            queries, is_query=True,
-            available_bytes=available_memory,
-            embedding_dim=128,
-            bytes_per_token=4
-        )
-
-        print(f"Optimal batch size for 1GB: {optimal_size}")
-
-        # assert optimal_size == 674, f"Expected optimal size to be 674, but got {optimal_size}"
 
     def test_basic_document(self):
         estimator = TokenizationEstimator.from_pretrained(
@@ -82,20 +68,6 @@ class TestTokenizationEstimator:
 
         assert total_mem / 1024**2 > 0, f"Expected memory usage to be greater than 0MB, but got {total_mem / 1024**2}MB"
 
-        # Test batch optimization
-        print("\nTesting batch optimization...")
-        available_memory = 1024 * 1024 * 1024  # 1GB
-
-        optimal_size = estimator.get_optimal_batch_size(
-            documents, is_query=False,
-            available_bytes=available_memory,
-            embedding_dim=128,
-            bytes_per_token=4
-        )
-
-        print(f"Optimal batch size for 1GB: {optimal_size}")
-
-        # assert optimal_size == 57581, f"Expected optimal size to be 57581, but got {optimal_size}"
 
     def test_split_into_batches_single_batch_fits(self):
         """Test that when all texts fit in memory, they return as a single batch."""

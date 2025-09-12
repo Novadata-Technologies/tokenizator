@@ -40,14 +40,6 @@ token_mem, inter_mem, total_mem = estimator.estimate_memory_usage(
 )
 print(f"Memory needed: {total_mem / 1024**2:.2f} MB")
 
-# Get optimal batch size for available memory
-optimal_batch = estimator.get_optimal_batch_size(
-    queries[0], is_query=True,
-    available_bytes=1024**3,  # 1GB
-    embedding_dim=128
-)
-print(f"Optimal batch size: {optimal_batch}")
-```
 
 ## API Reference
 
@@ -68,7 +60,7 @@ estimator = TokenizationEstimator.from_pretrained(
 - `estimate_dimensions(texts, is_query)` → `(batch_size, sequence_length)`
 - `estimate_memory_usage(texts, is_query, embedding_dim, bytes_per_token)` → `(token_memory, intermediate_memory, total_memory)`
 - `can_fit_in_memory(texts, is_query, available_bytes, embedding_dim)` → `bool`
-- `get_optimal_batch_size(sample_text, is_query, available_bytes, embedding_dim)` → `int`
+- `split_into_batches(texts, is_query, available_bytes, embedding_dim)` → `List[List[str]]`
 - `split_into_batches(texts, is_query, available_bytes, embedding_dim)` → `List[List[str]]`
 
 ## Development
