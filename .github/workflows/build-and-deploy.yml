@@ -8,6 +8,10 @@ on:
     branches: [main]
     types: [closed]
 
+permissions:
+  contents: write
+  actions: read
+
 jobs:
   test:
     name: Run Tests
@@ -180,6 +184,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
 
     steps:
+      - uses: actions/checkout@v4
       - name: Download all wheel artifacts
         uses: actions/download-artifact@v4
         with:
