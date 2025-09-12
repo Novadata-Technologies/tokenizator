@@ -3,6 +3,7 @@ use tokenizers::Tokenizer;
 
 // TODO mask_token_id has to be set correctly, not with params (model.rs)
 // TODO query and document prefixes have to be set correctly, not with params (builder.rs)
+// TODO We need to separate again query max length and document max length
 
 // Custom Python exception for tokenization errors
 pyo3::create_exception!(
@@ -144,18 +145,29 @@ impl TokenizationEstimator {
 
     /// Estimate memory usage in bytes
     /// Returns (token_memory, intermediate_memory, total_estimated_memory)
+    #[pyo3(signature = (
+        texts,
+        is_query,
+        *,
+        embedding_dim=None,
+        bytes_per_token=None,
+        num_heads=None
+    ))]
     pub fn estimate_memory_usage(
         &mut self,
         texts: Vec<String>,
         is_query: bool,
         embedding_dim: Option<usize>,
         bytes_per_token: Option<usize>,
+        num_heads: Option<usize>,
     ) -> PyResult<(usize, usize, usize)> {
         let (batch_size, seq_len) = self.estimate_dimensions(texts, is_query)?;
         // 128 dimensions usually in late interaction models
         let embedding_dim = embedding_dim.unwrap_or(128);
         // Assuming 4 bytes per token (float32)
         let bytes_per_token = bytes_per_token.unwrap_or(4);
+        // According to the paper, 12 attn heads for the small model, 16 for the large
+        let num_heads = num_heads.unwrap_or(12);
 
         // Memory for token tensors (input_ids, attention_mask, token_type_ids)
         // token_type_ids is usually set to 0 for all tokens, is a legacy param for next sentence prediction
@@ -164,13 +176,27 @@ impl TokenizationEstimator {
         // Memory for intermediate embeddings and final output
         let intermediate_memory = batch_size * seq_len * embedding_dim * bytes_per_token * 2; // intermediate + final layers
 
-        // Add 20% overhead for temporary tensors and operations
-        let total_memory = ((token_memory + intermediate_memory) as f64 * 1.2) as usize;
+        // Memory for attention matrices
+        // Each attention head needs batch_size × seq_len × seq_len
+        let attention_memory = batch_size * num_heads * seq_len * seq_len * bytes_per_token;
+
+        let subtotal = token_memory + intermediate_memory + attention_memory;
+        // Add 50% overhead for temporary tensors and operations
+        let total_memory = (subtotal as f64 * 1.5) as usize;
 
         Ok((token_memory, intermediate_memory, total_memory))
     }
 
     /// Check if a batch can fit in available memory
+    #[pyo3(signature = (
+        texts,
+        is_query,
+        available_bytes,
+        *,
+        embedding_dim=None,
+        bytes_per_token=None,
+        num_heads=None
+    ))]
     pub fn can_fit_in_memory(
         &mut self,
         texts: Vec<String>,
@@ -178,14 +204,24 @@ impl TokenizationEstimator {
         available_bytes: usize,
         embedding_dim: Option<usize>,
         bytes_per_token: Option<usize>,
+        num_heads: Option<usize>,
     ) -> PyResult<bool> {
         let (_, _, estimated_memory) =
-            self.estimate_memory_usage(texts, is_query, embedding_dim, bytes_per_token)?;
+            self.estimate_memory_usage(texts, is_query, embedding_dim, bytes_per_token, num_heads)?;
         Ok(estimated_memory <= available_bytes)
     }
 
     /// Split texts into optimal batches based on memory constraints
     /// Uses recursive power-of-2 splitting strategy
+    #[pyo3(signature = (
+        texts,
+        is_query,
+        available_bytes,
+        *,
+        embedding_dim=None,
+        bytes_per_token=None,
+        num_heads=None
+    ))]
     pub fn split_into_batches(
         &mut self,
         texts: Vec<String>,
@@ -193,6 +229,7 @@ impl TokenizationEstimator {
         available_bytes: usize,
         embedding_dim: Option<usize>,
         bytes_per_token: Option<usize>,
+        num_heads: Option<usize>,
     ) -> PyResult<Vec<Vec<String>>> {
         if texts.is_empty() {
             return Ok(vec![]);
@@ -205,6 +242,7 @@ impl TokenizationEstimator {
             available_bytes,
             embedding_dim,
             bytes_per_token,
+            num_heads,
         )? {
             return Ok(vec![texts]);
         }
@@ -216,6 +254,7 @@ impl TokenizationEstimator {
             available_bytes,
             embedding_dim,
             bytes_per_token,
+            num_heads,
         )
     }
 
@@ -227,6 +266,7 @@ impl TokenizationEstimator {
         available_bytes: usize,
         embedding_dim: Option<usize>,
         bytes_per_token: Option<usize>,
+        num_heads: Option<usize>,
     ) -> PyResult<Vec<Vec<String>>> {
         // Base case: if we have only one text and it doesn't fit, return error
         if texts.len() == 1 {
@@ -236,6 +276,7 @@ impl TokenizationEstimator {
                 available_bytes,
                 embedding_dim,
                 bytes_per_token,
+                num_heads,
             )? {
                 return Err(TokenizationError::new_err(
                     "Single text is too large to fit in available memory",
@@ -251,6 +292,7 @@ impl TokenizationEstimator {
             available_bytes,
             embedding_dim,
             bytes_per_token,
+            num_heads,
         )? {
             return Ok(vec![texts]);
         }
@@ -268,6 +310,7 @@ impl TokenizationEstimator {
             available_bytes,
             embedding_dim,
             bytes_per_token,
+            num_heads,
         )?;
         result.extend(left_batches);
 
@@ -277,6 +320,7 @@ impl TokenizationEstimator {
             available_bytes,
             embedding_dim,
             bytes_per_token,
+            num_heads,
         )?;
         result.extend(right_batches);
 

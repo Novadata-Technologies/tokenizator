@@ -37,7 +37,7 @@ class TestTokenizationEstimator:
         # Estimate memory usage
         print("\nTesting memory estimation for queries...")
         token_mem, inter_mem, total_mem = estimator.estimate_memory_usage(
-            queries, is_query=True, embedding_dim=128, bytes_per_token=4
+            queries, is_query=True, embedding_dim=128, bytes_per_token=4, num_heads=12
         )
 
         print(f"Memory needed: {total_mem / 1024**2:.2f} MB")
@@ -61,7 +61,7 @@ class TestTokenizationEstimator:
         # Estimate memory usage
         print("\nTesting memory estimation for documents...")
         token_mem, inter_mem, total_mem = estimator.estimate_memory_usage(
-            documents, is_query=False, embedding_dim=128, bytes_per_token=4
+            documents, is_query=False, embedding_dim=128, bytes_per_token=4, num_heads=12
         )
 
         print(f"Memory needed: {total_mem / 1024**2:.2f} MB")

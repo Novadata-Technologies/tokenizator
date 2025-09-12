@@ -36,7 +36,7 @@ print(f"Batch: {batch_size}, Sequence: {seq_len}")
 
 # Estimate memory usage
 token_mem, inter_mem, total_mem = estimator.estimate_memory_usage(
-    queries, is_query=True, embedding_dim=128, bytes_per_token=4
+    queries, is_query=True, embedding_dim=128, bytes_per_token=4, num_attention_heads=12
 )
 print(f"Memory needed: {total_mem / 1024**2:.2f} MB")
 
@@ -58,8 +58,8 @@ estimator = TokenizationEstimator.from_pretrained(
 ### Methods
 
 - `estimate_dimensions(texts, is_query)` → `(batch_size, sequence_length)`
-- `estimate_memory_usage(texts, is_query, embedding_dim, bytes_per_token)` → `(token_memory, intermediate_memory, total_memory)`
-- `can_fit_in_memory(texts, is_query, available_bytes, embedding_dim)` → `bool`
+- `estimate_memory_usage(texts, is_query, embedding_dim, bytes_per_token, num_attention_heads)` → `(token_memory, intermediate_memory, total_memory)`
+- `can_fit_in_memory(texts, is_query, available_bytes, embedding_dim, num_attention_heads)` → `bool`
 - `split_into_batches(texts, is_query, available_bytes, embedding_dim)` → `List[List[str]]`
 - `split_into_batches(texts, is_query, available_bytes, embedding_dim)` → `List[List[str]]`
 

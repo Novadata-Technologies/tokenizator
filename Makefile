@@ -20,10 +20,14 @@ test: build-dev ## Run minimal tests (most require internet connection)
 build-dev:	## Build development version for Python
 	@echo "Installing cffi if needed..."
 	@uv add cffi || echo "cffi already installed"
+	@echo "Uninstalling old version to avoid cache issues..."
+	@uv pip uninstall tokenizator -q 2>/dev/null || true
 	@echo "Building development version..."
 	uv run maturin develop --release
 
 build-release:	## Build optimized release version
+	@echo "Uninstalling old version to avoid cache issues..."
+	@uv pip uninstall tokenizator -q 2>/dev/null || true
 	@echo "Building release version..."
 	uv run maturin build --release
 
@@ -52,6 +56,15 @@ clean:	## Clean build artifacts
 	find . -name "*.pyc" -delete
 	find . -name "*.pyo" -delete
 	rm -rf .venv
+
+clean-cache:	## Clean only Python/uv caches without removing venv
+	@echo "Cleaning Python caches..."
+	@uv pip uninstall tokenizator -q 2>/dev/null || true
+	@rm -rf .venv/lib/python*/site-packages/tokenizator*
+	@rm -rf __pycache__/
+	@find . -name "*.pyc" -delete
+	@find . -name "*.pyo" -delete
+	@echo "Cache cleaned, venv preserved"
 
 dev-setup: install-deps build-dev ## Development setup
 	@echo "Development environment ready!"
