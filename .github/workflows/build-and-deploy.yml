@@ -1,8 +1,9 @@
-name: Build and Deploy Wheels (Production)
+name: Build and Deploy Wheels
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
     types: [closed]
@@ -11,7 +12,7 @@ jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || startsWith(github.ref, 'refs/tags/')
 
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +44,7 @@ jobs:
     name: Build Wheels
     needs: test
     runs-on: ${{ matrix.os }}
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || startsWith(github.ref, 'refs/tags/')
 
     strategy:
       fail-fast: false
@@ -141,11 +142,11 @@ jobs:
           path: wheels/
           if-no-files-found: error
 
-  deploy-to-s3:
-    name: Deploy to S3
+  create-release:
+    name: Create GitHub Release
     needs: build-wheels
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+    if: startsWith(github.ref, 'refs/tags/')
 
     steps:
       - name: Download all wheel artifacts
@@ -162,45 +163,58 @@ jobs:
           echo ""
           echo "Total wheels found: $(find all-wheels -name "*.whl" -type f | wc -l)"
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          files: all-wheels/*.whl
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload wheels to S3
+  deploy-latest:
+    name: Deploy Latest Wheels
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-wheels
+          pattern: wheels-*
+          merge-multiple: true
+
+      - name: List downloaded wheels
         run: |
-          # Remove existing wheels from S3 bucket
-          echo "Removing existing wheels from S3..."
-          aws s3 rm s3://taizen-wheels/tokenizator/ --recursive || echo "No existing files to remove"
+          echo "Downloaded wheels:"
+          find all-wheels -name "*.whl" -type f | sort
+          echo ""
+          echo "Total wheels found: $(find all-wheels -name "*.whl" -type f | wc -l)"
 
-          # Upload new wheels
-          echo "Uploading new wheels to S3..."
-          aws s3 cp all-wheels/ s3://taizen-wheels/tokenizator/ --recursive --include "*.whl"
-
-          # List uploaded files
-          echo "Files uploaded to S3:"
-          aws s3 ls s3://taizen-wheels/tokenizator/ --recursive
-
-      - name: Create and upload package index
+      - name: Delete existing latest release
         run: |
-          # Create index.html
-          cat > index.html << 'EOF'
-          <!DOCTYPE html>
-          <html>
-          <head><title>Tokenizator Packages</title></head>
-          <body>
-              <h1>Links for tokenizator</h1>
-          EOF
+          gh release delete latest --yes || echo "No existing latest release"
+          git push origin --delete latest || echo "No existing latest tag"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-          # Add links for each wheel
-          for wheel in all-wheels/*.whl; do
-              filename=$(basename "$wheel")
-              echo "    <a href=\"$filename\">$filename</a><br/>" >> index.html
-          done
+      - name: Create latest release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: latest
+          name: "Latest Development Build"
+          files: all-wheels/*.whl
+          generate_release_notes: false
+          draft: false
+          prerelease: true
+          body: |
+            Latest development build from main branch.
 
-          echo "</body></html>" >> index.html
+            **⚠️ This is a pre-release build - use with caution in production!**
 
-          # Upload index
-          aws s3 cp index.html s3://taizen-wheels/tokenizator/
+            Auto-generated from commit: ${{ github.sha }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
