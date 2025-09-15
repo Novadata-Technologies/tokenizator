@@ -26,6 +26,7 @@ from tokenizator import TokenizationEstimator
 # Note: Use a model that has a tokenizer.json file available
 estimator = TokenizationEstimator.from_pretrained(
     repo_id="lightonai/GTE-ModernColBERT-v1",  # Example model
+    query_length=128,
     document_length=512
 )
 
@@ -36,7 +37,7 @@ print(f"Batch: {batch_size}, Sequence: {seq_len}")
 
 # Estimate memory usage
 token_mem, inter_mem, total_mem = estimator.estimate_memory_usage(
-    queries, is_query=True, embedding_dim=128, bytes_per_token=4, num_attention_heads=12
+    queries, is_query=True
 )
 print(f"Memory needed: {total_mem / 1024**2:.2f} MB")
 
@@ -48,20 +49,23 @@ print(f"Memory needed: {total_mem / 1024**2:.2f} MB")
 ```python
 estimator = TokenizationEstimator.from_pretrained(
     repo_id: str,
+    query_length: int = 128,
     document_length: int = 512,
-    query_prefix: str = "[Q]",
-    document_prefix: str = "[D]",
-    mask_token: str = "[MASK]"
 )
 ```
 
 ### Methods
 
 - `estimate_dimensions(texts, is_query)` → `(batch_size, sequence_length)`
-- `estimate_memory_usage(texts, is_query, embedding_dim, bytes_per_token, num_attention_heads)` → `(token_memory, intermediate_memory, total_memory)`
-- `can_fit_in_memory(texts, is_query, available_bytes, embedding_dim, num_attention_heads)` → `bool`
-- `split_into_batches(texts, is_query, available_bytes, embedding_dim)` → `List[List[str]]`
-- `split_into_batches(texts, is_query, available_bytes, embedding_dim)` → `List[List[str]]`
+- `estimate_memory_usage(texts, is_query)` → `(token_memory, intermediate_memory, total_memory)`
+- `can_fit_in_memory(texts, is_query, available_bytes)` → `bool`
+- `split_into_batches(texts, is_query, available_bytes)` → `List[List[str]]`
+
+## Release
+- Bump version on `pyproject.toml` and `Cargo.toml`
+- Create new tag with `git tag v{version}`
+- Push tag to GitHub with `git push origin v{version}`
+- Push repository to GitHub with `git push origin main` or merge the PR
 
 ## Development
 
@@ -79,6 +83,9 @@ make test
 
 # Clean build artifacts
 make clean
+
+# Rebuild project (slow, use if problems with python caching modules)
+make rebuild
 ```
 
 ## Features
@@ -94,5 +101,5 @@ make clean
 - **Internet required**: `from_pretrained()` downloads from HuggingFace Hub
 - **Model compatibility**: Use models that have `tokenizer.json` available
 - **Padding strategy**: Queries use fixed-length, documents use variable-length
-- **Memory overhead**: Estimates include ~20% for intermediate tensors
+- **Memory overhead**: Estimates include ~3x overhead, deduced with empirical trials
 - **uv package manager**: Examples use `uv` instead of `pip`
