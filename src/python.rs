@@ -1,7 +1,6 @@
 use pyo3::prelude::*;
 use tokenizers::Tokenizer;
 
-// TODO mask_token_id has to be set correctly, not with params (model.rs)
 // TODO query and document prefixes have to be set correctly, not with params (builder.rs)
 // TODO We need to separate again query max length and document max length
 
@@ -16,10 +15,17 @@ pyo3::create_exception!(
 pub struct TokenizationEstimator {
     tokenizer: Tokenizer,
     query_prefix: String,
+    query_length: usize,
     document_prefix: String,
     document_length: usize,
     mask_token_id: u32,
     mask_token: String,
+    // Model architecture parameters from config.json
+    hidden_dim: usize,
+    num_layers: usize,
+    num_heads: usize,
+    intermediate_dim: usize,
+    final_dim: usize, // ColBERT output dimension
 }
 
 #[pymethods]
@@ -29,6 +35,7 @@ impl TokenizationEstimator {
     #[staticmethod]
     #[pyo3(signature = (
         repo_id,
+        query_length=None,
         document_length=None,
         query_prefix=None,
         document_prefix=None,
@@ -36,6 +43,7 @@ impl TokenizationEstimator {
     ))]
     pub fn from_pretrained(
         repo_id: &str,
+        query_length: Option<usize>,
         document_length: Option<usize>,
         query_prefix: Option<String>,
         document_prefix: Option<String>,
@@ -54,27 +62,100 @@ impl TokenizationEstimator {
             ))
         })?;
 
+        // Download and parse config.json to get model architecture parameters
+        let config_filename = repo.get("config.json").map_err(|e| {
+            TokenizationError::new_err(format!("Failed to download config from {}: {}", repo_id, e))
+        })?;
+
+        let special_tokens_map_filename = repo.get("special_tokens_map.json").map_err(|e| {
+            TokenizationError::new_err(format!(
+                "Failed to download special_tokens_map from {}: {}",
+                repo_id, e
+            ))
+        })?;
+
+        // Read config file
+        let config_content = std::fs::read_to_string(&config_filename).map_err(|e| {
+            TokenizationError::new_err(format!("Failed to read config file: {}", e))
+        })?;
+
+        // Read special_tokens_map file
+        let special_tokens_map_content = std::fs::read_to_string(&special_tokens_map_filename)
+            .map_err(|e| {
+                TokenizationError::new_err(format!("Failed to read special_tokens_map file: {}", e))
+            })?;
+
+        // Parse config JSON
+        let config: serde_json::Value = serde_json::from_str(&config_content).map_err(|e| {
+            TokenizationError::new_err(format!("Failed to parse config JSON: {}", e))
+        })?;
+
+        // Parse config JSON
+        let special_tokens_map: serde_json::Value =
+            serde_json::from_str(&special_tokens_map_content).map_err(|e| {
+                TokenizationError::new_err(format!(
+                    "Failed to parse special_tokens_map_content JSON: {}",
+                    e
+                ))
+            })?;
+
+        // Extract model architecture parameters with defaults for common architectures
+        let hidden_dim = config["hidden_size"].as_u64().unwrap_or(768) as usize;
+
+        let num_layers = config["num_hidden_layers"].as_u64().unwrap_or(22) as usize;
+
+        let num_heads = config["num_attention_heads"].as_u64().unwrap_or(12) as usize;
+
+        let final_query_prefix = query_prefix
+            .unwrap_or_else(|| config["query_prefix"].as_str().unwrap_or("[Q]").to_string());
+
+        let final_document_prefix = document_prefix.unwrap_or_else(|| {
+            config["document_prefix"]
+                .as_str()
+                .unwrap_or("[D]")
+                .to_string()
+        });
+
+        let final_mask_token = mask_token.unwrap_or_else(|| {
+            special_tokens_map["mask_token"]
+                .as_str()
+                .unwrap_or("[MASK]")
+                .to_string()
+        });
+
+        // ModernBERT uses "intermediate_size", BERT uses "intermediate_size" too
+        // Default to 4x hidden_dim if not specified (768)
+        let intermediate_dim = config["intermediate_size"]
+            .as_u64()
+            .map(|x| x as usize)
+            .unwrap_or(hidden_dim * 4);
+
         // Load tokenizer from downloaded file
         let tokenizer = Tokenizer::from_file(tokenizer_filename)
             .map_err(|e| TokenizationError::new_err(format!("Failed to load tokenizer: {}", e)))?;
 
-        // Get mask token info from tokenizer or use provided mask_token
-        let mask_token_str = mask_token.unwrap_or_else(|| "[MASK]".to_string());
         let mask_token_id = tokenizer
-            .get_vocab(true)
-            .get(&mask_token_str)
-            .copied()
-            .or_else(|| tokenizer.get_vocab(true).get("[MASK]").copied())
-            .or_else(|| tokenizer.get_vocab(true).get("[UNK]").copied())
-            .unwrap_or(100); // fallback ID
+            .token_to_id(final_mask_token.as_str())
+            .ok_or_else(|| {
+                TokenizationError::new_err(format!(
+                    "Token '{}' not found in the tokenizer's vocabulary.",
+                    final_mask_token
+                ))
+            })?;
 
         Ok(Self {
             tokenizer,
-            query_prefix: query_prefix.unwrap_or_else(|| "[Q]".to_string()),
-            document_prefix: document_prefix.unwrap_or_else(|| "[D]".to_string()),
+            query_prefix: final_query_prefix,
+            query_length: query_length.unwrap_or(256),
+            document_prefix: final_document_prefix,
             document_length: document_length.unwrap_or(8192),
             mask_token_id,
-            mask_token: mask_token_str,
+            mask_token: final_mask_token,
+            hidden_dim,
+            num_layers,
+            num_heads,
+            intermediate_dim,
+            final_dim: 128, // ColBERT always outputs 128 dimensions
         })
     }
 
@@ -92,7 +173,7 @@ impl TokenizationEstimator {
         }
 
         let (prefix, max_length) = if is_query {
-            (self.query_prefix.as_str(), self.document_length)
+            (self.query_prefix.as_str(), self.query_length)
         } else {
             (self.document_prefix.as_str(), self.document_length)
         };
@@ -148,41 +229,74 @@ impl TokenizationEstimator {
     #[pyo3(signature = (
         texts,
         is_query,
-        *,
-        embedding_dim=None,
-        bytes_per_token=None,
-        num_heads=None
+        overhead_multiplier=3.0
     ))]
     pub fn estimate_memory_usage(
         &mut self,
         texts: Vec<String>,
         is_query: bool,
-        embedding_dim: Option<usize>,
-        bytes_per_token: Option<usize>,
-        num_heads: Option<usize>,
+        overhead_multiplier: Option<f64>,
     ) -> PyResult<(usize, usize, usize)> {
         let (batch_size, seq_len) = self.estimate_dimensions(texts, is_query)?;
-        // 128 dimensions usually in late interaction models
-        let embedding_dim = embedding_dim.unwrap_or(128);
-        // Assuming 4 bytes per token (float32)
-        let bytes_per_token = bytes_per_token.unwrap_or(4);
-        // According to the paper, 12 attn heads for the small model, 16 for the large
-        let num_heads = num_heads.unwrap_or(12);
 
-        // Memory for token tensors (input_ids, attention_mask, token_type_ids)
-        // token_type_ids is usually set to 0 for all tokens, is a legacy param for next sentence prediction
-        let token_memory = batch_size * seq_len * 3 * bytes_per_token;
+        // Use model architecture parameters from config
+        let hidden_dim = self.hidden_dim;
+        let _num_layers = self.num_layers;
+        let intermediate_dim = self.intermediate_dim;
+        let embedding_dim = self.final_dim;
+        let num_heads = self.num_heads;
 
-        // Memory for intermediate embeddings and final output
-        let intermediate_memory = batch_size * seq_len * embedding_dim * bytes_per_token * 2; // intermediate + final layers
+        // For mixed precision: some operations in fp16 (2 bytes), attention scores in fp32 (4 bytes)
+        let fp16_bytes = 2;
+        let fp32_bytes = 4;
 
-        // Memory for attention matrices
-        // Each attention head needs batch_size × seq_len × seq_len
-        let attention_memory = batch_size * num_heads * seq_len * seq_len * bytes_per_token;
+        // Memory for input tensors (input_ids, attention_mask, token_type_ids, position_ids)
+        let token_memory = batch_size * seq_len * 4 * 4; // 4 tensors, int32
 
-        let subtotal = token_memory + intermediate_memory + attention_memory;
-        // Add 50% overhead for temporary tensors and operations
-        let total_memory = (subtotal as f64 * 1.5) as usize;
+        // Persistent memory during forward pass
+        // Embeddings (token + position, in fp16)
+        let embedding_memory = batch_size * seq_len * hidden_dim * fp16_bytes * 2;
+
+        // Hidden state buffers (current + residual for skip connections, in fp16)
+        let hidden_buffers = batch_size * seq_len * hidden_dim * fp16_bytes * 2;
+
+        // Peak memory during a single layer computation (not accumulated across layers!)
+        // We calculate the worst case: global attention layer
+
+        // Q, K, V projections (fp16)
+        let qkv_memory = batch_size * seq_len * hidden_dim * fp16_bytes * 3;
+
+        // Attention scores and probabilities (must be fp32 for numerical stability)
+        let attention_scores = batch_size * num_heads * seq_len * seq_len * fp32_bytes;
+        let attention_probs = batch_size * num_heads * seq_len * seq_len * fp32_bytes;
+
+        // Attention output (fp16)
+        let attention_output = batch_size * seq_len * hidden_dim * fp16_bytes;
+
+        // FFN computation (fp16)
+        let ffn_intermediate = batch_size * seq_len * intermediate_dim * fp16_bytes;
+        let ffn_output = batch_size * seq_len * hidden_dim * fp16_bytes;
+
+        // Peak layer memory (worst case: global attention)
+        let peak_layer_memory = qkv_memory
+            + attention_scores
+            + attention_probs
+            + attention_output
+            + ffn_intermediate
+            + ffn_output;
+
+        // Final ColBERT projection (fp16)
+        let projection_memory = batch_size * seq_len * embedding_dim * fp16_bytes;
+
+        // Total peak memory during inference
+        let intermediate_memory =
+            embedding_memory + hidden_buffers + peak_layer_memory + projection_memory;
+
+        // Total with PyTorch overhead (memory fragmentation, temporary buffers)
+        // The 3.0 number was chosen by empirical trials. 250 documents with 1000 random chars cause OOM, while 200 documents don't
+        let overhead_multiplier = overhead_multiplier.unwrap_or(3.0);
+        let total_memory =
+            ((token_memory + intermediate_memory) as f64 * overhead_multiplier) as usize;
 
         Ok((token_memory, intermediate_memory, total_memory))
     }
@@ -192,22 +306,17 @@ impl TokenizationEstimator {
         texts,
         is_query,
         available_bytes,
-        *,
-        embedding_dim=None,
-        bytes_per_token=None,
-        num_heads=None
+        overhead_multiplier=3.0
     ))]
     pub fn can_fit_in_memory(
         &mut self,
         texts: Vec<String>,
         is_query: bool,
         available_bytes: usize,
-        embedding_dim: Option<usize>,
-        bytes_per_token: Option<usize>,
-        num_heads: Option<usize>,
+        overhead_multiplier: Option<f64>,
     ) -> PyResult<bool> {
         let (_, _, estimated_memory) =
-            self.estimate_memory_usage(texts, is_query, embedding_dim, bytes_per_token, num_heads)?;
+            self.estimate_memory_usage(texts, is_query, overhead_multiplier)?;
         Ok(estimated_memory <= available_bytes)
     }
 
@@ -217,19 +326,14 @@ impl TokenizationEstimator {
         texts,
         is_query,
         available_bytes,
-        *,
-        embedding_dim=None,
-        bytes_per_token=None,
-        num_heads=None
+        overhead_multiplier=3.0
     ))]
     pub fn split_into_batches(
         &mut self,
         texts: Vec<String>,
         is_query: bool,
         available_bytes: usize,
-        embedding_dim: Option<usize>,
-        bytes_per_token: Option<usize>,
-        num_heads: Option<usize>,
+        overhead_multiplier: Option<f64>,
     ) -> PyResult<Vec<Vec<String>>> {
         if texts.is_empty() {
             return Ok(vec![]);
@@ -240,22 +344,13 @@ impl TokenizationEstimator {
             texts.clone(),
             is_query,
             available_bytes,
-            embedding_dim,
-            bytes_per_token,
-            num_heads,
+            overhead_multiplier,
         )? {
             return Ok(vec![texts]);
         }
 
         // Recursively split the texts
-        self.split_recursive(
-            texts,
-            is_query,
-            available_bytes,
-            embedding_dim,
-            bytes_per_token,
-            num_heads,
-        )
+        self.split_recursive(texts, is_query, available_bytes, overhead_multiplier)
     }
 
     /// Recursively split texts into batches that fit in memory
@@ -264,9 +359,7 @@ impl TokenizationEstimator {
         texts: Vec<String>,
         is_query: bool,
         available_bytes: usize,
-        embedding_dim: Option<usize>,
-        bytes_per_token: Option<usize>,
-        num_heads: Option<usize>,
+        overhead_multiplier: Option<f64>,
     ) -> PyResult<Vec<Vec<String>>> {
         // Base case: if we have only one text and it doesn't fit, return error
         if texts.len() == 1 {
@@ -274,9 +367,7 @@ impl TokenizationEstimator {
                 texts.clone(),
                 is_query,
                 available_bytes,
-                embedding_dim,
-                bytes_per_token,
-                num_heads,
+                overhead_multiplier,
             )? {
                 return Err(TokenizationError::new_err(
                     "Single text is too large to fit in available memory",
@@ -290,9 +381,7 @@ impl TokenizationEstimator {
             texts.clone(),
             is_query,
             available_bytes,
-            embedding_dim,
-            bytes_per_token,
-            num_heads,
+            overhead_multiplier,
         )? {
             return Ok(vec![texts]);
         }
@@ -308,9 +397,7 @@ impl TokenizationEstimator {
             left_batch.to_vec(),
             is_query,
             available_bytes,
-            embedding_dim,
-            bytes_per_token,
-            num_heads,
+            overhead_multiplier,
         )?;
         result.extend(left_batches);
 
@@ -318,9 +405,7 @@ impl TokenizationEstimator {
             right_batch.to_vec(),
             is_query,
             available_bytes,
-            embedding_dim,
-            bytes_per_token,
-            num_heads,
+            overhead_multiplier,
         )?;
         result.extend(right_batches);
 
@@ -345,6 +430,7 @@ mod tests {
     fn test_from_pretrained() {
         let estimator = TokenizationEstimator::from_pretrained(
             "lightonai/GTE-ModernColBERT-v1",
+            Some(256),
             Some(8192),
             Some("[Q]".to_string()),
             Some("[D]".to_string()),
