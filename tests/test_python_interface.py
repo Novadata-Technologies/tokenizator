@@ -1,4 +1,3 @@
-from idlelib import query
 #!/usr/bin/env python3
 
 import pytest
@@ -238,7 +237,7 @@ class TestTokenizationEstimator:
         ]
 
         token_mem, inter_mem, total_mem = estimator.estimate_memory_usage(
-            documents_list, is_query=False
+            documents_list, is_query=False,
         )
         print(token_mem/1e9, inter_mem/1e9, total_mem/1e9)
 
