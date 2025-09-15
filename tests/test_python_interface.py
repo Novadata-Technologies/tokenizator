@@ -1,13 +1,9 @@
+from idlelib import query
 #!/usr/bin/env python3
-"""
-Minimal Python tests for the tokenization_estimator module.
-
-Run these tests after building the Rust extension:
-    maturin develop
-    python -m pytest tests/test_python_interface.py -v
-"""
 
 import pytest
+import random
+import string
 
 # Import the compiled module
 try:
@@ -22,6 +18,7 @@ class TestTokenizationEstimator:
     def test_basic_query(self):
         estimator = TokenizationEstimator.from_pretrained(
             repo_id="lightonai/GTE-ModernColBERT-v1",
+            query_length=256,
             document_length=1024
         )
 
@@ -32,12 +29,12 @@ class TestTokenizationEstimator:
 
         print(f"\nQuery batch: {q_batch} samples, {q_seq} tokens each")
 
-        assert q_seq == 1024
+        assert q_seq == 256
 
         # Estimate memory usage
         print("\nTesting memory estimation for queries...")
         token_mem, inter_mem, total_mem = estimator.estimate_memory_usage(
-            queries, is_query=True, embedding_dim=128, bytes_per_token=4, num_heads=12
+            queries, is_query=True
         )
 
         print(f"Memory needed: {total_mem / 1024**2:.2f} MB")
@@ -48,6 +45,7 @@ class TestTokenizationEstimator:
     def test_basic_document(self):
         estimator = TokenizationEstimator.from_pretrained(
             repo_id="lightonai/GTE-ModernColBERT-v1",
+            query_length=256,
             document_length=8192
         )
 
@@ -61,7 +59,7 @@ class TestTokenizationEstimator:
         # Estimate memory usage
         print("\nTesting memory estimation for documents...")
         token_mem, inter_mem, total_mem = estimator.estimate_memory_usage(
-            documents, is_query=False, embedding_dim=128, bytes_per_token=4, num_heads=12
+            documents, is_query=False
         )
 
         print(f"Memory needed: {total_mem / 1024**2:.2f} MB")
@@ -73,6 +71,7 @@ class TestTokenizationEstimator:
         """Test that when all texts fit in memory, they return as a single batch."""
         estimator = TokenizationEstimator.from_pretrained(
             repo_id="lightonai/GTE-ModernColBERT-v1",
+            query_length=128,
             document_length=512
         )
 
@@ -85,9 +84,7 @@ class TestTokenizationEstimator:
         batches = estimator.split_into_batches(
             texts,
             is_query=False,
-            available_bytes=available_bytes,
-            embedding_dim=128,
-            bytes_per_token=4
+            available_bytes=available_bytes
         )
 
         print(f"\nSingle batch test - Number of batches: {len(batches)}")
@@ -102,6 +99,7 @@ class TestTokenizationEstimator:
         """Test that when texts don't fit together, they get split appropriately."""
         estimator = TokenizationEstimator.from_pretrained(
             repo_id="lightonai/GTE-ModernColBERT-v1",
+            query_length=128,
             document_length=512
         )
 
@@ -109,14 +107,12 @@ class TestTokenizationEstimator:
         texts = [f"Text number {i}" for i in range(8)]
 
         # Set available_bytes low enough to force splitting
-        available_bytes = 50 * 1024  # 50KB - should force splitting
+        available_bytes = 50 * 1024 * 10  # 50KB - should force splitting, added 10X multiplier to account for overhead
 
         batches = estimator.split_into_batches(
             texts,
             is_query=False,
-            available_bytes=available_bytes,
-            embedding_dim=128,
-            bytes_per_token=4
+            available_bytes=available_bytes
         )
 
         print(f"\nSplitting test - Number of batches: {len(batches)}")
@@ -141,6 +137,7 @@ class TestTokenizationEstimator:
         """Test that when a single text is too large, an error is raised."""
         estimator = TokenizationEstimator.from_pretrained(
             repo_id="lightonai/GTE-ModernColBERT-v1",
+            query_length=128,
             document_length=512
         )
 
@@ -160,9 +157,7 @@ class TestTokenizationEstimator:
             estimator.split_into_batches(
                 texts,
                 is_query=False,
-                available_bytes=available_bytes,
-                embedding_dim=128,
-                bytes_per_token=4
+                available_bytes=available_bytes
             )
 
         print(f"\nError test - Exception: {exc_info.value}")
@@ -172,15 +167,14 @@ class TestTokenizationEstimator:
         """Test that empty input returns empty batches."""
         estimator = TokenizationEstimator.from_pretrained(
             repo_id="lightonai/GTE-ModernColBERT-v1",
+            query_length=128,
             document_length=512
         )
 
         batches = estimator.split_into_batches(
             [],  # empty texts
             is_query=False,
-            available_bytes=1024,
-            embedding_dim=128,
-            bytes_per_token=4
+            available_bytes=1024
         )
 
         print(f"\nEmpty input test - Number of batches: {len(batches)}")
@@ -190,6 +184,7 @@ class TestTokenizationEstimator:
         """Test that the power-of-2 splitting works correctly with larger input."""
         estimator = TokenizationEstimator.from_pretrained(
             repo_id="lightonai/GTE-ModernColBERT-v1",
+            query_length=128,
             document_length=256  # Smaller to make memory calculations more predictable
         )
 
@@ -197,14 +192,12 @@ class TestTokenizationEstimator:
         texts = [f"Test document {i}" for i in range(16)]
 
         # Set memory so that 16 doesn't fit, but smaller batches do
-        available_bytes = 20 * 1024  # 20KB
+        available_bytes = 20 * 1024 * 100  # 20KB, added 100X multiplier to account for overhead
 
         batches = estimator.split_into_batches(
             texts,
             is_query=False,
-            available_bytes=available_bytes,
-            embedding_dim=128,
-            bytes_per_token=4
+            available_bytes=available_bytes
         )
 
         print(f"\nPower of 2 test - Number of batches: {len(batches)}")
@@ -225,11 +218,30 @@ class TestTokenizationEstimator:
             fits = estimator.can_fit_in_memory(
                 batch,
                 is_query=False,
-                available_bytes=available_bytes,
-                embedding_dim=128,
-                bytes_per_token=4
+                available_bytes=available_bytes
             )
             assert fits, f"Batch {i} should fit in available memory but doesn't"
+
+    def test_very_large_batch(self):
+
+        estimator = TokenizationEstimator.from_pretrained(
+            repo_id="lightonai/GTE-ModernColBERT-v1",
+            query_length=512,
+            document_length=8192
+        )
+
+        characters = string.ascii_letters + string.digits
+
+        # Generate random strings
+        documents_list = [
+            "".join(random.choices(characters, k=1000)) for _ in range(250)
+        ]
+
+        token_mem, inter_mem, total_mem = estimator.estimate_memory_usage(
+            documents_list, is_query=False
+        )
+        print(token_mem/1e9, inter_mem/1e9, total_mem/1e9)
+
 
 
 if __name__ == "__main__":
